@@ -1,5 +1,5 @@
 import math
-import copy
+# import copy
 from pathlib import Path
 from random import random
 from functools import partial
@@ -921,7 +921,7 @@ class Trainer(object):
         
         self.ds = dataset
 
-        assert len(self.ds) >= 100, 'you should have at least 100 images in your folder. at least 10k images recommended'
+        # assert len(self.ds) >= 100, 'you should have at least 100 images in your folder. at least 10k images recommended'
 
         dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = cpu_count())
 
