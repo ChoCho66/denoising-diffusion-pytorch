@@ -756,7 +756,7 @@ class GaussianDiffusion(nn.Module):
 
         return img
     
-    @torch.no_grad()
+    @torch.inference_mode()
     def interpolate_from_x1_to_x2(self, x1, x2, t = None, s = 10):
         """
         s + 1 等分

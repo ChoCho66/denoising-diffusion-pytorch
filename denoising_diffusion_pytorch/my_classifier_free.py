@@ -857,7 +857,7 @@ class GaussianDiffusion(nn.Module):
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start = x_start, x_t = x, t = t)
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def p_sample(self, x, t: int, classes, cond_scale = 6., rescaled_phi = 0.7, clip_denoised = True):
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((x.shape[0],), t, device = x.device, dtype = torch.long)
@@ -866,7 +866,7 @@ class GaussianDiffusion(nn.Module):
         pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_img, x_start
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def p_sample_loop(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7):
         batch, device = shape[0], self.betas.device
 
@@ -882,7 +882,7 @@ class GaussianDiffusion(nn.Module):
         img = unnormalize_to_zero_to_one(img)
         return img
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def ddim_sample(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, clip_denoised = True):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
 
@@ -919,7 +919,7 @@ class GaussianDiffusion(nn.Module):
         img = unnormalize_to_zero_to_one(img)
         return img
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def sample(self, 
                classes = None, 
                cond_scale = 6., rescaled_phi = 0.7):
@@ -931,7 +931,7 @@ class GaussianDiffusion(nn.Module):
         sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         return sample_fn(classes, (batch_size, channels, image_size, image_size), cond_scale, rescaled_phi)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def interpolate(self, x1, x2, classes, t = None, lam = 0.5):
         b, *_, device = *x1.shape, x1.device
         t = default(t, self.num_timesteps - 1)
@@ -949,7 +949,7 @@ class GaussianDiffusion(nn.Module):
         img = unnormalize_to_zero_to_one(img)
         return img
     
-    @torch.no_grad()
+    @torch.inference_mode()
     def interpolate_from_x1_to_x2(self, x1, x2, classes, t = None, s = 10):
         """
         s + 1 等分
