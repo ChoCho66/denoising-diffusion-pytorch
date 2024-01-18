@@ -31,6 +31,8 @@ from denoising_diffusion_pytorch.fid_evaluation import FIDEvaluation
 
 from denoising_diffusion_pytorch.version import __version__
 
+import matplotlib.pyplot as plt
+
 # constants
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
@@ -753,6 +755,47 @@ class GaussianDiffusion(nn.Module):
             img, x_start = self.p_sample(img, i, self_cond)
 
         return img
+    
+    @torch.no_grad()
+    def interpolate_from_x1_to_x2(self, x1, x2, t = None, s = 10):
+        """
+        s + 1 等分
+        """
+        b, *_, device = *x1.shape, x1.device
+        assert b == 1
+        
+        t = default(t, self.num_timesteps - 1)
+
+        assert x1.shape == x2.shape
+
+        t_batched = torch.stack([torch.tensor(t, device = device)] * b)
+        xt1, xt2 = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
+
+        img_list = []
+        for lam in range(s+1):
+            lam = lam/s
+            img = (1 - lam) * xt1 + lam * xt2
+
+            for i in tqdm(reversed(range(0, t)), desc = 'interpolation sample time step', total = t):
+                img, _ = self.p_sample(img, i)
+            
+            img = unnormalize_to_zero_to_one(img[0])
+            img = img.clamp(0,1).cpu()
+            img_list.append(img)
+        
+        # 创建一个2x5的子图布局
+        _, axs = plt.subplots(2, 5, figsize=(10, 4))
+
+        # 将每张图像显示在对应的子图中
+        for i in range(2):
+            for j in range(5):
+                index = i * 5 + j
+                axs[i, j].imshow(img_list[index].permute(1, 2, 0))
+                # axs[i, j].axis('off')  # 关闭坐标轴
+
+        # 调整布局，以免重叠
+        plt.tight_layout()
+        plt.show()
 
     @autocast(enabled = False)
     def q_sample(self, x_start, t, noise = None):
@@ -1079,18 +1122,25 @@ class Trainer(object):
 
         accelerator.print('training complete')
 
+    def fid_score(self,
+                  batch_size=128,
+                  num_fid_samples=50000,
+                  inception_block_idx = 2048,
+                  ):
+        self.fid_scorer = FIDEvaluation(
+            batch_size=batch_size,
+            dl=self.dl,
+            sampler=self.ema.ema_model,
+            channels=self.channels,
+            accelerator=self.accelerator,
+            stats_dir=self.results_folder,
+            device=self.device,
+            num_fid_samples=num_fid_samples,
+            inception_block_idx = inception_block_idx
+        )
+        accelerator = self.accelerator
+        fid_score = self.fid_scorer.fid_score()
+        accelerator.print(f'fid_score: {fid_score}')
 
-# 定义转换
-pil_to_tensor = transforms.ToTensor()
-# tensor_to_pil = transforms.ToPILImage()
-def tensor_to_pil(x:torch):
-    return transforms.ToPILImage()(x.clamp(0,1))
 
-
-def add_to_class(Class):
-  def wrapper(obj):
-    setattr(Class, obj.__name__, obj)
-  return wrapper
-
-from sys import getsizeof
-cuda_or_cpu = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from denoising_diffusion_pytorch.my_function import *

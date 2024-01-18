@@ -920,7 +920,11 @@ class GaussianDiffusion(nn.Module):
         return img
 
     @torch.no_grad()
-    def sample(self, classes, cond_scale = 6., rescaled_phi = 0.7):
+    def sample(self, 
+               classes = None, 
+               cond_scale = 6., rescaled_phi = 0.7):
+        if classes is None:
+            classes = torch.randint(0,self.num_classes,(1,)).to(self.device)
         batch_size, image_size, channels = classes.shape[0], self.image_size, self.channels
         
         # p_sample_loop and ddim_sample 最後都有 unnormalize_to_zero_to_one
@@ -985,7 +989,6 @@ class GaussianDiffusion(nn.Module):
         # 调整布局，以免重叠
         plt.tight_layout()
         plt.show()
-    
     
 
     @autocast(enabled = False)
@@ -1303,16 +1306,4 @@ class Trainer(object):
         fid_score = self.fid_scorer.fid_score()
         accelerator.print(f'fid_score: {fid_score}')
 
-# 定义转换
-pil_to_tensor = transforms.ToTensor()
-# tensor_to_pil = transforms.ToPILImage()
-def tensor_to_pil(x:torch):
-    return transforms.ToPILImage()(x.clamp(0,1))
-
-def add_to_class(Class):
-  def wrapper(obj):
-    setattr(Class, obj.__name__, obj)
-  return wrapper
-
-from sys import getsizeof
-cuda_or_cpu = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from denoising_diffusion_pytorch.my_function import *
