@@ -867,23 +867,39 @@ class GaussianDiffusion(nn.Module):
         return pred_img, x_start
 
     @torch.inference_mode()
-    def p_sample_loop(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7):
+    def p_sample_loop(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, 
+                      return_all_timesteps = False,
+                      return_predict_x0 = False):
         batch, device = shape[0], self.betas.device
 
         img = torch.randn(shape, device=device)
+        imgs = [img]
 
         x_start = None
+        x_starts = []
 
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
             img, x_start = self.p_sample(img, t, classes, cond_scale, rescaled_phi)
+            imgs.append(img)
+            x_starts.append(x_start)
 
         # if self.is_minus_mean: 
         #     img = img + self.mean_by_given_classes(classes).to(device)
-        img = unnormalize_to_zero_to_one(img)
-        return img
+        ret = img if not return_all_timesteps else torch.stack(imgs, dim = 1)
+        ret2 = x_start if not return_all_timesteps else torch.stack(x_starts, dim = 1)
+        
+        ret = unnormalize_to_zero_to_one(ret)
+        ret2 = unnormalize_to_zero_to_one(ret2)
+        
+        if return_predict_x0:
+            return ret
+        else:
+            return ret, ret2
 
     @torch.inference_mode()
-    def ddim_sample(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, clip_denoised = True):
+    def ddim_sample(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, clip_denoised = True,
+                    return_all_timesteps = False,
+                    return_predict_x0 = False):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
 
         times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
@@ -891,8 +907,10 @@ class GaussianDiffusion(nn.Module):
         time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
 
         img = torch.randn(shape, device = device)
+        imgs = [img]
 
         x_start = None
+        x_starts = []
 
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
             time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
@@ -900,6 +918,8 @@ class GaussianDiffusion(nn.Module):
 
             if time_next < 0:
                 img = x_start
+                imgs.append(img)
+                x_starts.append(x_start)
                 continue
 
             alpha = self.alphas_cumprod[time]
@@ -913,11 +933,23 @@ class GaussianDiffusion(nn.Module):
             img = x_start * alpha_next.sqrt() + \
                   c * pred_noise + \
                   sigma * noise
+                  
+            imgs.append(img)
+            x_starts.append(x_start)
 
         # if self.is_minus_mean: 
         #     img = img + self.mean_by_given_classes(classes).to(device)
-        img = unnormalize_to_zero_to_one(img)
-        return img
+        
+        ret = img if not return_all_timesteps else torch.stack(imgs, dim = 1)
+        ret2 = x_start if not return_all_timesteps else torch.stack(x_starts, dim = 1)
+        
+        ret = unnormalize_to_zero_to_one(ret)
+        ret2 = unnormalize_to_zero_to_one(ret2)
+        
+        if return_predict_x0:
+            return ret
+        else:
+            return ret, ret2
 
     @torch.inference_mode()
     def sample(self, 
