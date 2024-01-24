@@ -892,9 +892,9 @@ class GaussianDiffusion(nn.Module):
         ret2 = unnormalize_to_zero_to_one(ret2)
         
         if return_predict_x0:
-            return ret
-        else:
             return ret, ret2
+        else:
+            return ret
 
     @torch.inference_mode()
     def ddim_sample(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, clip_denoised = True,
@@ -947,9 +947,9 @@ class GaussianDiffusion(nn.Module):
         ret2 = unnormalize_to_zero_to_one(ret2)
         
         if return_predict_x0:
-            return ret
-        else:
             return ret, ret2
+        else:
+            return ret
 
     @torch.inference_mode()
     def sample(self, 

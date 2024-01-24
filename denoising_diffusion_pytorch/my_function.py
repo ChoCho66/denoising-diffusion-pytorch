@@ -1,3 +1,5 @@
+import torch
+from torchvision import transforms
 # 定义转换
 def pil_to_tensor(x):
     return transforms.ToTensor()(x)
@@ -17,7 +19,7 @@ cuda_or_cpu = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def images_to_gif(
     images: list,
     save_path: str = "images.gif",
-    loop=0, duration=400
+    loop=0, duration=40
 ):
     """
     images: list of tensors with length L \n
