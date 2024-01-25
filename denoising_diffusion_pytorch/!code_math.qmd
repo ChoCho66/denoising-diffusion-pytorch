@@ -9,7 +9,7 @@
 
 - `forward_with_cond_scale()`: Sampling 時的 $\widetilde{\varepsilon_{\theta}}(x_t,c)$
   
-  - return a linear interpolation of `scaled_logits` and `rescaled_logits` 
+  - return a linear interpvolation of `scaled_logits` and `rescaled_logits` 
   
   - `cond_scale`$= s = w + 1$
   
@@ -41,7 +41,7 @@
     (x_t,t,c) \longmapsto \bigl( \mu_{\theta}(x_t,c), \Sigma_t, \log \Sigma_t, \widehat{x}_0(x_t,c) \bigr),
   \end{aligned}
   $$
-  where $p_{\theta}(x_t,c)\sim \mathcal{N}(\mu_\theta(x_t,c),\Sigma_t)$
+  where $p_{\theta}(x_t,c)\sim \mathcal{N}(\mu_\theta(x_t,c),\Sigma_t).$
 
 - `p_sample(x, t: int, classes)`:
   

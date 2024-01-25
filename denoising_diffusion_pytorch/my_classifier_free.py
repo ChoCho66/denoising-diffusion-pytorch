@@ -327,6 +327,7 @@ class Unet(nn.Module):
         # determine dimensions
 
         self.channels = channels
+        self.dim_mults = dim_mults
         input_channels = channels
 
         init_dim = default(init_dim, dim)
@@ -1119,6 +1120,9 @@ class Trainer(object):
     ):
         super().__init__()
 
+        # fid
+        self.fid = None
+
         # accelerator
 
         self.accelerator = Accelerator(
@@ -1337,5 +1341,6 @@ class Trainer(object):
         accelerator = self.accelerator
         fid_score = self.fid_scorer.fid_score()
         accelerator.print(f'fid_score: {fid_score}')
+        self.fid = fid_score
 
 from denoising_diffusion_pytorch.my_function import *

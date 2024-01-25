@@ -27,3 +27,28 @@ def images_to_gif(
     """
     images = [tensor_to_pil(i) for i in images]
     return images[0].save(save_path, save_all=True, append_images=images[1:], loop=loop, duration=duration)
+  
+def save_info(path,model,diffusion,trainer):
+    info_to_save = {
+        "diffusion.image_size": diffusion.image_size,
+        "model.dim_mults": model.dim_mults,
+        "diffusion.num_timesteps": diffusion.num_timesteps,
+        "diffusion.beta_schedule": diffusion.beta_schedule,
+        "diffusion.objective": diffusion.objective,
+        "trainer.batch_size": trainer.batch_size,
+        "self.num_fid_samples": trainer.num_fid_samples,
+        "trainer.fid": trainer.fid,
+    }
+
+    with open(path, 'w') as file:
+        for title, value in info_to_save.items():
+            file.write(f"{title}: {value}\n")
+
+def fix_seed(seed: int = 66):
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # print(f"Random seed set as {seed}")

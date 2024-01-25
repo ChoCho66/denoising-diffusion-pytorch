@@ -297,6 +297,7 @@ class Unet(nn.Module):
         # determine dimensions
 
         self.channels = channels
+        self.dim_mults = dim_mults
         self.self_condition = self_condition
         input_channels = channels * (2 if self_condition else 1)
 
@@ -497,6 +498,7 @@ class GaussianDiffusion(nn.Module):
         self.model = model
 
         self.channels = self.model.channels
+        self.beta_schedule = beta_schedule
         self.self_condition = self.model.self_condition
 
         self.image_size = image_size
@@ -626,10 +628,17 @@ class GaussianDiffusion(nn.Module):
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def model_predictions(self, x, t, x_self_cond = None, clip_x_start = False, rederive_pred_noise = False):
+        """
+        return pred_noise, pred_x0
+        """
         model_output = self.model(x, t, x_self_cond)
         maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
 
         if self.objective == 'pred_noise':
+            """
+            model(xt,t) = pred_noise
+            pred_x0 = pred_x0(xt,t,pred_noise)
+            """
             pred_noise = model_output
             x_start = self.predict_start_from_noise(x, t, pred_noise)
             x_start = maybe_clip(x_start)
@@ -638,11 +647,20 @@ class GaussianDiffusion(nn.Module):
                 pred_noise = self.predict_noise_from_start(x, t, x_start)
 
         elif self.objective == 'pred_x0':
+            """
+            model(xt,t) = pred_x0
+            pred_noise = pred_noise(xt,t,pred_x0)
+            """
             x_start = model_output
             x_start = maybe_clip(x_start)
             pred_noise = self.predict_noise_from_start(x, t, x_start)
 
         elif self.objective == 'pred_v':
+            """
+            model(xt,t) = pred_v
+            pred_x0 = pred_x0(xt,t,pred_v)
+            pred_noise = pred_noise(xt,t,pred_x0)
+            """
             v = model_output
             x_start = self.predict_start_from_v(x, t, v)
             x_start = maybe_clip(x_start)
@@ -651,6 +669,9 @@ class GaussianDiffusion(nn.Module):
         return ModelPrediction(pred_noise, x_start)
 
     def p_mean_variance(self, x, t, x_self_cond = None, clip_denoised = True):
+        """
+        return μ_θ(xt,t), Σ_t, log Σ_t, pred x0(xt)
+        """
         preds = self.model_predictions(x, t, x_self_cond)
         x_start = preds.pred_x_start
 
@@ -947,6 +968,9 @@ class Trainer(object):
     ):
         super().__init__()
 
+        # fid
+        self.fid = None
+        
         # accelerator
 
         self.accelerator = Accelerator(
@@ -1161,6 +1185,7 @@ class Trainer(object):
         accelerator = self.accelerator
         fid_score = self.fid_scorer.fid_score()
         accelerator.print(f'fid_score: {fid_score}')
-
+        self.num_fid_samples = num_fid_samples
+        self.fid = fid_score
 
 from denoising_diffusion_pytorch.my_function import *
