@@ -23,7 +23,7 @@ def images_to_gif(
 ):
     """
     images: list of tensors with length L \n
-    images.shape = [L,c,w,h]
+    image: tensor with shape (c,w,h)
     """
     images = [tensor_to_pil(i) for i in images]
     return images[0].save(save_path, save_all=True, append_images=images[1:], loop=loop, duration=duration)

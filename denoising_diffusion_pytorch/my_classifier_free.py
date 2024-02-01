@@ -1,5 +1,5 @@
 import math
-import copy
+# import copy
 from pathlib import Path
 from random import random
 from functools import partial
@@ -822,20 +822,36 @@ class GaussianDiffusion(nn.Module):
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def model_predictions(self, x, t, classes, cond_scale = 6., rescaled_phi = 0.7, clip_x_start = False):
+        """
+        return pred_noise, pred_x0
+        """
         model_output = self.model.forward_with_cond_scale(x, t, classes, cond_scale = cond_scale, rescaled_phi = rescaled_phi)
         maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
 
         if self.objective == 'pred_noise':
+            """
+            model(xt,t) = pred_noise
+            pred_x0 = pred_x0(xt,t,pred_noise)
+            """
             pred_noise = model_output
             x_start = self.predict_start_from_noise(x, t, pred_noise)
             x_start = maybe_clip(x_start)
 
         elif self.objective == 'pred_x0':
+            """
+            model(xt,t) = pred_x0
+            pred_noise = pred_noise(xt,t,pred_x0)
+            """
             x_start = model_output
             x_start = maybe_clip(x_start)
             pred_noise = self.predict_noise_from_start(x, t, x_start)
 
         elif self.objective == 'pred_v':
+            """
+            model(xt,t) = pred_v
+            pred_x0 = pred_x0(xt,t,pred_v)
+            pred_noise = pred_noise(xt,t,pred_x0)
+            """
             v = model_output
             x_start = self.predict_start_from_v(x, t, v)
             x_start = maybe_clip(x_start)
@@ -845,9 +861,8 @@ class GaussianDiffusion(nn.Module):
 
     def p_mean_variance(self, x, t, classes, cond_scale, rescaled_phi, clip_denoised = True):
         """
-        (x, t, classes, cond_scale, rescaled_phi) 
-        
-        -> (model_mean, posterior_variance, posterior_log_variance, x_start)
+        (xt, t, classes, cond_scale, rescaled_phi) \n
+        -> μ_θ(xt,t), Σ_t, log Σ_t, pred x0(xt)
         """
         preds = self.model_predictions(x, t, classes, cond_scale, rescaled_phi)
         x_start = preds.pred_x_start
@@ -901,6 +916,9 @@ class GaussianDiffusion(nn.Module):
     def ddim_sample(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, clip_denoised = True,
                     return_all_timesteps = False,
                     return_predict_x0 = False):
+        """
+        shape: (batch_size, channels, image_size, image_size)
+        """
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
 
         times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
@@ -983,9 +1001,10 @@ class GaussianDiffusion(nn.Module):
         return img
     
     @torch.inference_mode()
-    def interpolate_from_x1_to_x2(self, x1, x2, classes, t = None, s = 10):
+    def interpolate_from_x1_to_x2(self, x1, x2, classes, t = None, s = (2,8), save_gif_path = None):
         """
-        s + 1 等分
+        s + 1 等分 \n
+        x1,x2 with shape (c,w,h) (single image)
         """
         b, *_, device = *x1.shape, x1.device
         assert b == 1
@@ -997,25 +1016,31 @@ class GaussianDiffusion(nn.Module):
         t_batched = torch.stack([torch.tensor(t, device = device)] * b)
         xt1, xt2 = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
 
-        img_list = []
-        for lam in range(s+1):
-            lam = lam/s
-            img = (1 - lam) * xt1 + lam * xt2
+        ss = s[0] * s[1]
 
-            for i in tqdm(reversed(range(0, t)), desc = 'interpolation sample time step', total = t):
-                img, _ = self.p_sample(img, i, classes)
+        # 建立等差數列 lam
+        lam = torch.linspace(0, 1, ss+1).to(device)
+        lam = lam.view(-1,1,1,1)
+        
+        # 使用廣播執行內插
+        img = (1 - lam) * x1t + lam * x2t
+        
+        for i in tqdm(reversed(range(0, t)), desc = 'interpolation sample time step', total = t):
+            img, _ = self.p_sample(img, i, classes)
             
-            img = unnormalize_to_zero_to_one(img[0])
-            img = img.clamp(0,1).cpu()
-            img_list.append(img)
+        img = unnormalize_to_zero_to_one(img)
+        img_list = list(img.clamp(0,1).cpu())
+        
+        if save_gif_path:
+            images_to_gif(img_list, save_path=save_gif_path, duration=200)
         
         # 创建一个2x5的子图布局
-        _, axs = plt.subplots(2, 5, figsize=(10, 4))
+        _, axs = plt.subplots(s[0], s[1], figsize=(2 * s[1], 2 * s[0]))
 
         # 将每张图像显示在对应的子图中
-        for i in range(2):
-            for j in range(5):
-                index = i * 5 + j
+        for i in range(s[0]):
+            for j in range(s[1]):
+                index = i * s[1] + j
                 axs[i, j].imshow(img_list[index].permute(1, 2, 0))
                 # axs[i, j].axis('off')  # 关闭坐标轴
 
@@ -1092,6 +1117,9 @@ class GaussianDiffusion(nn.Module):
 
 def divisible_by(numer, denom):
     return (numer % denom) == 0
+
+# trainer class
+
 class Trainer(object):
     def __init__(
         self,

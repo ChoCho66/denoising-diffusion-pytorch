@@ -1,5 +1,0 @@
-diffusion.image_size
-model.dim_mults
-diffusion.num_timesteps
-diffusion.beta_schedule
-diffusion.objective

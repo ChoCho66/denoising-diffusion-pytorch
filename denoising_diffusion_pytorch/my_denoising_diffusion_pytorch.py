@@ -619,6 +619,9 @@ class GaussianDiffusion(nn.Module):
         )
 
     def q_posterior(self, x_start, x_t, t):
+        """
+        (x_0, x_t, t) -> (posterior_mean, posterior_variance, posterior_log_variance_clipped)
+        """
         posterior_mean = (
             extract(self.posterior_mean_coef1, t, x_t.shape) * x_start +
             extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
@@ -670,7 +673,7 @@ class GaussianDiffusion(nn.Module):
 
     def p_mean_variance(self, x, t, x_self_cond = None, clip_denoised = True):
         """
-        return μ_θ(xt,t), Σ_t, log Σ_t, pred x0(xt)
+        (xt,t) -> μ_θ(xt,t), Σ_t, log Σ_t, pred x0(xt)
         """
         preds = self.model_predictions(x, t, x_self_cond)
         x_start = preds.pred_x_start
@@ -748,6 +751,7 @@ class GaussianDiffusion(nn.Module):
             alpha = self.alphas_cumprod[time]
             alpha_next = self.alphas_cumprod[time_next]
 
+            # eta = ddim_sampling_eta = 0 (default)
             sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
             c = (1 - alpha_next - sigma ** 2).sqrt()
 
@@ -798,9 +802,10 @@ class GaussianDiffusion(nn.Module):
         return img
     
     @torch.inference_mode()
-    def interpolate_from_x1_to_x2(self, x1, x2, t = None, s = 10):
+    def interpolate_from_x1_to_x2(self, x1, x2, t = None, s = (2,8), save_gif_path = None):
         """
-        s + 1 等分
+        s + 1 等分 \n
+        x1,x2 with shape (c,w,h) (single image)
         """
         b, *_, device = *x1.shape, x1.device
         assert b == 1
@@ -810,33 +815,41 @@ class GaussianDiffusion(nn.Module):
         assert x1.shape == x2.shape
 
         t_batched = torch.stack([torch.tensor(t, device = device)] * b)
-        xt1, xt2 = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
+        x1t, x2t = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
 
-        img_list = []
-        for lam in range(s+1):
-            lam = lam/s
-            img = (1 - lam) * xt1 + lam * xt2
+        ss = s[0] * s[1]
 
-            for i in tqdm(reversed(range(0, t)), desc = 'interpolation sample time step', total = t):
-                img, _ = self.p_sample(img, i)
+        # 建立等差數列 lam
+        lam = torch.linspace(0, 1, ss+1).to(device)
+        lam = lam.view(-1,1,1,1)
+
+        # 使用廣播執行內插
+        img = (1 - lam) * x1t + lam * x2t
+        
+        for i in tqdm(reversed(range(0, t)), desc = 'interpolation sample time step', total = t):
+            img, _ = self.p_sample(img, i)
             
-            img = unnormalize_to_zero_to_one(img[0])
-            img = img.clamp(0,1).cpu()
-            img_list.append(img)
+        img = unnormalize_to_zero_to_one(img)
+        img_list = list(img.clamp(0,1).cpu())
+        
+        if save_gif_path:
+            images_to_gif(img_list, save_path=save_gif_path, duration=200)
         
         # 创建一个2x5的子图布局
-        _, axs = plt.subplots(2, 5, figsize=(10, 4))
+        _, axs = plt.subplots(s[0], s[1], figsize=(2 * s[1], 2 * s[0]))
 
         # 将每张图像显示在对应的子图中
-        for i in range(2):
-            for j in range(5):
-                index = i * 5 + j
+        for i in range(s[0]):
+            for j in range(s[1]):
+                index = i * s[1] + j
                 axs[i, j].imshow(img_list[index].permute(1, 2, 0))
                 # axs[i, j].axis('off')  # 关闭坐标轴
 
         # 调整布局，以免重叠
         plt.tight_layout()
         plt.show()
+
+# TODO: gif 製作變大點
 
     @autocast(enabled = False)
     def q_sample(self, x_start, t, noise = None):
@@ -894,9 +907,14 @@ class GaussianDiffusion(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
+    # def forward(self, img, classes, *args, **kwargs):
+    # Training 時的 loss = diffusion(training_images, classes = image_classes)
+    # training_images ~ q(x0)
     def forward(self, img, *args, **kwargs):
         b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
         assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
+        
+        # t ~ unif({0,1,...,T})
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         # img = self.normalize(img)
@@ -1161,6 +1179,56 @@ class Trainer(object):
                             self.save("latest")
                         else:
                             self.save(milestone)
+
+                pbar.update(1)
+
+        accelerator.print('training complete')
+    
+    def train1(self,
+               folder,
+               image_size,
+               train_num_steps=12):
+        accelerator = self.accelerator
+        device = accelerator.device
+        
+        ds1 = MyDataset(folder=folder,
+                       image_size=image_size)
+        
+        dl1 = DataLoader(self.ds, batch_size = len(ds1), shuffle = True, pin_memory = True, num_workers = cpu_count())
+
+        dl1 = self.accelerator.prepare(dl1)
+        dl1 = cycle(dl1)
+
+        step1 = 0
+        with tqdm(initial = step1, total = train_num_steps, disable = not accelerator.is_main_process) as pbar:
+
+            while step1 < train_num_steps:
+
+                total_loss = 0.
+
+                for _ in range(self.gradient_accumulate_every):
+                    data = next(dl1).to(device)
+
+                    with self.accelerator.autocast():
+                        loss = self.model(data)
+                        loss = loss / self.gradient_accumulate_every
+                        total_loss += loss.item()
+
+                    self.accelerator.backward(loss)
+
+                pbar.set_description(f'loss: {total_loss:.4f}')
+
+                accelerator.wait_for_everyone()
+                accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+
+                self.opt.step()
+                self.opt.zero_grad()
+
+                accelerator.wait_for_everyone()
+
+                step1 += 1
+                if accelerator.is_main_process:
+                    self.ema.update()
 
                 pbar.update(1)
 
