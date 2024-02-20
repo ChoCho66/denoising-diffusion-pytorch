@@ -1,11 +1,14 @@
 import torch
 from torchvision import transforms
+from PIL import Image
 # 定义转换
-def pil_to_tensor(x):
+# def pil_to_tensor(x):
+def pil2tensor(x:Image):
     return transforms.ToTensor()(x)
 # pil_to_tensor = transforms.ToTensor()
 # tensor_to_pil = transforms.ToPILImage()
-def tensor_to_pil(x:torch):
+# def tensor_to_pil(x:torch):
+def tensor2pil(x:torch):
     return transforms.ToPILImage()(x.clamp(0,1))
 
 def add_to_class(Class):
@@ -16,7 +19,7 @@ def add_to_class(Class):
 from sys import getsizeof
 cuda_or_cpu = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def images_to_gif(
+def images2gif(
     images: list,
     save_path: str = "images.gif",
     loop=0, duration=40
