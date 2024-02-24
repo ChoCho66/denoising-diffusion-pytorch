@@ -121,7 +121,7 @@ class PixelNorm(Module):
         dim = self.dim
         return l2norm(x, dim = dim, eps = self.eps) * sqrt(x.shape[dim])
 
-# forced weight normed conv2d and linear
+# forced weight normed conv3d and linear
 # algorithm 1 in paper
 
 def normalize_weight(weight, eps = 1e-4):
@@ -130,7 +130,7 @@ def normalize_weight(weight, eps = 1e-4):
     normed_weight = normed_weight * sqrt(weight.numel() / weight.shape[0])
     return unpack_one(normed_weight, ps, 'o *')
 
-class Conv2d(Module):
+class Conv3d(Module):
     def __init__(
         self,
         dim_in,
@@ -140,7 +140,7 @@ class Conv2d(Module):
         concat_ones_to_input = False   # they use this in the input block to protect against loss of expressivity due to removal of all biases, even though they claim they observed none
     ):
         super().__init__()
-        weight = torch.randn(dim_out, dim_in + int(concat_ones_to_input), kernel_size, kernel_size)
+        weight = torch.randn(dim_out, dim_in + int(concat_ones_to_input), kernel_size, kernel_size, kernel_size)
         self.weight = nn.Parameter(weight)
 
         self.eps = eps
@@ -157,9 +157,9 @@ class Conv2d(Module):
         weight = normalize_weight(self.weight, eps = self.eps) / sqrt(self.fan_in)
 
         if self.concat_ones_to_input:
-            x = F.pad(x, (0, 0, 0, 0, 1, 0), value = 1.)
+            x = F.pad(x, (0, 0, 0, 0, 0, 0, 1, 0), value = 1.)
 
-        return F.conv2d(x, weight, padding='same')
+        return F.conv3d(x, weight, padding='same')
 
 class Linear(Module):
     def __init__(self, dim_in, dim_out, eps = 1e-4):
@@ -217,7 +217,7 @@ class Encoder(Module):
 
         curr_dim = dim
         if downsample:
-            self.downsample_conv = Conv2d(curr_dim, dim_out, 1)
+            self.downsample_conv = Conv3d(curr_dim, dim_out, 1)
             curr_dim = dim_out
 
         self.pixel_norm = PixelNorm(dim = 1)
@@ -231,13 +231,13 @@ class Encoder(Module):
 
         self.block1 = nn.Sequential(
             MPSiLU(),
-            Conv2d(curr_dim, dim_out, 3)
+            Conv3d(curr_dim, dim_out, 3)
         )
 
         self.block2 = nn.Sequential(
             MPSiLU(),
             nn.Dropout(dropout),
-            Conv2d(dim_out, dim_out, 3)
+            Conv3d(dim_out, dim_out, 3)
         )
 
         self.res_mp_add = MPAdd(t = mp_add_t)
@@ -258,8 +258,8 @@ class Encoder(Module):
         emb = None
     ):
         if self.downsample:
-            h, w = x.shape[-2:]
-            x = F.interpolate(x, (h // 2, w // 2), mode = 'bilinear')
+            t, h, w = x.shape[-3:]
+            x = F.interpolate(x, (t // 2, h // 2, w // 2), mode = 'trilinear')
             x = self.downsample_conv(x)
 
         x = self.pixel_norm(x)
@@ -270,7 +270,7 @@ class Encoder(Module):
 
         if exists(emb):
             scale = self.to_emb(emb) + 1
-            x = x * rearrange(scale, 'b c -> b c 1 1')
+            x = x * rearrange(scale, 'b c -> b c 1 1 1')
 
         x = self.block2(x)
 
@@ -311,16 +311,16 @@ class Decoder(Module):
 
         self.block1 = nn.Sequential(
             MPSiLU(),
-            Conv2d(dim, dim_out, 3)
+            Conv3d(dim, dim_out, 3)
         )
 
         self.block2 = nn.Sequential(
             MPSiLU(),
             nn.Dropout(dropout),
-            Conv2d(dim_out, dim_out, 3)
+            Conv3d(dim_out, dim_out, 3)
         )
 
-        self.res_conv = Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        self.res_conv = Conv3d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
         self.res_mp_add = MPAdd(t = mp_add_t)
 
@@ -340,8 +340,8 @@ class Decoder(Module):
         emb = None
     ):
         if self.upsample:
-            h, w = x.shape[-2:]
-            x = F.interpolate(x, (h * 2, w * 2), mode = 'bilinear')
+            t, h, w = x.shape[-3:]
+            x = F.interpolate(x, (t * 2, h * 2, w * 2), mode = 'trilinear')
 
         res = self.res_conv(x)
 
@@ -349,7 +349,7 @@ class Decoder(Module):
 
         if exists(emb):
             scale = self.to_emb(emb) + 1
-            x = x * rearrange(scale, 'b c -> b c 1 1')
+            x = x * rearrange(scale, 'b c -> b c 1 1 1')
 
         x = self.block2(x)
 
@@ -381,16 +381,16 @@ class Attention(Module):
         self.attend = Attend(flash = flash)
 
         self.mem_kv = nn.Parameter(torch.randn(2, heads, num_mem_kv, dim_head))
-        self.to_qkv = Conv2d(dim, hidden_dim * 3, 1)
-        self.to_out = Conv2d(hidden_dim, dim, 1)
+        self.to_qkv = Conv3d(dim, hidden_dim * 3, 1)
+        self.to_out = Conv3d(hidden_dim, dim, 1)
 
         self.mp_add = MPAdd(t = mp_add_t)
 
     def forward(self, x):
-        res, b, c, h, w = x, *x.shape
+        res, b, c, t, h, w = x, *x.shape
 
         qkv = self.to_qkv(x).chunk(3, dim = 1)
-        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h (x y) c', h = self.heads), qkv)
+        q, k, v = map(lambda t: rearrange(t, 'b (h c) t x y -> b h (t x y) c', h = self.heads), qkv)
 
         mk, mv = map(lambda t: repeat(t, 'h n d -> b h n d', b = b), self.mem_kv)
         k, v = map(partial(torch.cat, dim = -2), ((mk, k), (mv, v)))
@@ -399,7 +399,7 @@ class Attention(Module):
 
         out = self.attend(q, k, v)
 
-        out = rearrange(out, 'b h (x y) d -> b (h d) x y', x = h, y = w)
+        out = rearrange(out, 'b h (t x y) d -> b (h d) t x y', t = t, x = h, y = w)
         out = self.to_out(out)
 
         return self.mp_add(out, res)
@@ -407,7 +407,7 @@ class Attention(Module):
 # unet proposed by karras
 # bias-less, no group-norms, with magnitude preserving operations
 
-class KarrasUnet(Module):
+class KarrasUnet3D(Module):
     """
     going by figure 21. config G
     """
@@ -445,10 +445,10 @@ class KarrasUnet(Module):
 
         # input and output blocks
 
-        self.input_block = Conv2d(input_channels, dim, 3, concat_ones_to_input = True)
+        self.input_block = Conv3d(input_channels, dim, 3, concat_ones_to_input = True)
 
         self.output_block = nn.Sequential(
-            Conv2d(dim, channels, 3),
+            Conv3d(dim, channels, 3),
             Gain()
         )
 
@@ -563,7 +563,7 @@ class KarrasUnet(Module):
     ):
         # validate image shape
 
-        assert x.shape[1:] == (self.channels, self.image_size, self.image_size)
+        assert x.shape[1:] == (self.channels, self.image_size, self.image_size, self.image_size)
 
         # self conditioning
 
@@ -644,9 +644,9 @@ class MPFeedForward(Module):
         dim_inner = int(dim * mult)
         self.net = nn.Sequential(
             PixelNorm(dim = 1),
-            Conv2d(dim, dim_inner, 1),
+            Conv3d(dim, dim_inner, 1),
             MPSiLU(),
-            Conv2d(dim_inner, dim, 1)
+            Conv3d(dim_inner, dim, 1)
         )
 
         self.mp_add = MPAdd(t = mp_add_t)
@@ -686,32 +686,17 @@ class MPImageTransformer(Module):
 
         return x
 
-# works best with inverse square root decay schedule
-
-def InvSqrtDecayLRSched(
-    optimizer,
-    t_ref = 70000,
-    sigma_ref = 0.01
-):
-    """
-    refer to equation 67 and Table1
-    """
-    def inv_sqrt_decay_fn(t: int):
-        return sigma_ref / sqrt(max(t / t_ref, 1.))
-
-    return LambdaLR(optimizer, lr_lambda = inv_sqrt_decay_fn)
-
 # example
 
 if __name__ == '__main__':
-    unet = KarrasUnet(
+    unet = KarrasUnet3D(
         image_size = 64,
         dim = 192,
         dim_max = 768,
         num_classes = 1000,
     )
 
-    images = torch.randn(2, 4, 64, 64)
+    images = torch.randn(2, 4, 64, 64, 64)
 
     denoised_images = unet(
         images,

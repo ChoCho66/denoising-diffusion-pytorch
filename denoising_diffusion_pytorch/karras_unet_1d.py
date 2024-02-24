@@ -54,6 +54,11 @@ def divisible_by(numer, denom):
 def l2norm(t, dim = -1, eps = 1e-12):
     return F.normalize(t, dim = dim, eps = eps)
 
+def interpolate_1d(x, length, mode = 'bilinear'):
+    x = rearrange(x, 'b c t -> b c t 1')
+    x = F.interpolate(x, (length, 1), mode = mode)
+    return rearrange(x, 'b c t 1 -> b c t')
+
 # mp activations
 # section 2.5
 
@@ -130,25 +135,28 @@ def normalize_weight(weight, eps = 1e-4):
     normed_weight = normed_weight * sqrt(weight.numel() / weight.shape[0])
     return unpack_one(normed_weight, ps, 'o *')
 
-class Conv2d(Module):
+class Conv1d(Module):
     def __init__(
         self,
         dim_in,
         dim_out,
         kernel_size,
         eps = 1e-4,
+        init_dirac = False,
         concat_ones_to_input = False   # they use this in the input block to protect against loss of expressivity due to removal of all biases, even though they claim they observed none
     ):
         super().__init__()
-        weight = torch.randn(dim_out, dim_in + int(concat_ones_to_input), kernel_size, kernel_size)
+        weight = torch.randn(dim_out, dim_in + int(concat_ones_to_input), kernel_size)
         self.weight = nn.Parameter(weight)
 
+        if init_dirac:
+            nn.init.dirac_(self.weight)
+
         self.eps = eps
-        self.fan_in = dim_in * kernel_size ** 2
+        self.fan_in = dim_in * kernel_size
         self.concat_ones_to_input = concat_ones_to_input
 
     def forward(self, x):
-
         if self.training:
             with torch.no_grad():
                 normed_weight = normalize_weight(self.weight, eps = self.eps)
@@ -157,9 +165,9 @@ class Conv2d(Module):
         weight = normalize_weight(self.weight, eps = self.eps) / sqrt(self.fan_in)
 
         if self.concat_ones_to_input:
-            x = F.pad(x, (0, 0, 0, 0, 1, 0), value = 1.)
+            x = F.pad(x, (0, 0, 1, 0), value = 1.)
 
-        return F.conv2d(x, weight, padding='same')
+        return F.conv1d(x, weight, padding = 'same')
 
 class Linear(Module):
     def __init__(self, dim_in, dim_out, eps = 1e-4):
@@ -217,7 +225,7 @@ class Encoder(Module):
 
         curr_dim = dim
         if downsample:
-            self.downsample_conv = Conv2d(curr_dim, dim_out, 1)
+            self.downsample_conv = Conv1d(curr_dim, dim_out, 1)
             curr_dim = dim_out
 
         self.pixel_norm = PixelNorm(dim = 1)
@@ -231,13 +239,13 @@ class Encoder(Module):
 
         self.block1 = nn.Sequential(
             MPSiLU(),
-            Conv2d(curr_dim, dim_out, 3)
+            Conv1d(curr_dim, dim_out, 3)
         )
 
         self.block2 = nn.Sequential(
             MPSiLU(),
             nn.Dropout(dropout),
-            Conv2d(dim_out, dim_out, 3)
+            Conv1d(dim_out, dim_out, 3)
         )
 
         self.res_mp_add = MPAdd(t = mp_add_t)
@@ -258,8 +266,7 @@ class Encoder(Module):
         emb = None
     ):
         if self.downsample:
-            h, w = x.shape[-2:]
-            x = F.interpolate(x, (h // 2, w // 2), mode = 'bilinear')
+            x = interpolate_1d(x, x.shape[-1] // 2, mode = 'bilinear')
             x = self.downsample_conv(x)
 
         x = self.pixel_norm(x)
@@ -270,7 +277,7 @@ class Encoder(Module):
 
         if exists(emb):
             scale = self.to_emb(emb) + 1
-            x = x * rearrange(scale, 'b c -> b c 1 1')
+            x = x * rearrange(scale, 'b c -> b c 1')
 
         x = self.block2(x)
 
@@ -311,16 +318,16 @@ class Decoder(Module):
 
         self.block1 = nn.Sequential(
             MPSiLU(),
-            Conv2d(dim, dim_out, 3)
+            Conv1d(dim, dim_out, 3)
         )
 
         self.block2 = nn.Sequential(
             MPSiLU(),
             nn.Dropout(dropout),
-            Conv2d(dim_out, dim_out, 3)
+            Conv1d(dim_out, dim_out, 3)
         )
 
-        self.res_conv = Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        self.res_conv = Conv1d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
         self.res_mp_add = MPAdd(t = mp_add_t)
 
@@ -340,8 +347,7 @@ class Decoder(Module):
         emb = None
     ):
         if self.upsample:
-            h, w = x.shape[-2:]
-            x = F.interpolate(x, (h * 2, w * 2), mode = 'bilinear')
+            x = interpolate_1d(x, x.shape[-1] * 2, mode = 'bilinear')
 
         res = self.res_conv(x)
 
@@ -349,7 +355,7 @@ class Decoder(Module):
 
         if exists(emb):
             scale = self.to_emb(emb) + 1
-            x = x * rearrange(scale, 'b c -> b c 1 1')
+            x = x * rearrange(scale, 'b c -> b c 1')
 
         x = self.block2(x)
 
@@ -381,16 +387,16 @@ class Attention(Module):
         self.attend = Attend(flash = flash)
 
         self.mem_kv = nn.Parameter(torch.randn(2, heads, num_mem_kv, dim_head))
-        self.to_qkv = Conv2d(dim, hidden_dim * 3, 1)
-        self.to_out = Conv2d(hidden_dim, dim, 1)
+        self.to_qkv = Conv1d(dim, hidden_dim * 3, 1)
+        self.to_out = Conv1d(hidden_dim, dim, 1)
 
         self.mp_add = MPAdd(t = mp_add_t)
 
     def forward(self, x):
-        res, b, c, h, w = x, *x.shape
+        res, b, c, n = x, *x.shape
 
         qkv = self.to_qkv(x).chunk(3, dim = 1)
-        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h (x y) c', h = self.heads), qkv)
+        q, k, v = map(lambda t: rearrange(t, 'b (h c) n -> b h n c', h = self.heads), qkv)
 
         mk, mv = map(lambda t: repeat(t, 'h n d -> b h n d', b = b), self.mem_kv)
         k, v = map(partial(torch.cat, dim = -2), ((mk, k), (mv, v)))
@@ -399,15 +405,16 @@ class Attention(Module):
 
         out = self.attend(q, k, v)
 
-        out = rearrange(out, 'b h (x y) d -> b (h d) x y', x = h, y = w)
+        out = rearrange(out, 'b h n d -> b (h d) n')
         out = self.to_out(out)
 
         return self.mp_add(out, res)
 
 # unet proposed by karras
+# improvised 1d version
 # bias-less, no group-norms, with magnitude preserving operations
 
-class KarrasUnet(Module):
+class KarrasUnet1D(Module):
     """
     going by figure 21. config G
     """
@@ -415,7 +422,7 @@ class KarrasUnet(Module):
     def __init__(
         self,
         *,
-        image_size,
+        seq_len,
         dim = 192,
         dim_max = 768,            # channels will double every downsample and cap out to this value
         num_classes = None,       # in paper, they do 1000 classes for a popular benchmark
@@ -440,15 +447,15 @@ class KarrasUnet(Module):
         # determine dimensions
 
         self.channels = channels
-        self.image_size = image_size
+        self.seq_len = seq_len
         input_channels = channels * (2 if self_condition else 1)
 
         # input and output blocks
 
-        self.input_block = Conv2d(input_channels, dim, 3, concat_ones_to_input = True)
+        self.input_block = Conv1d(input_channels, dim, 3, concat_ones_to_input = True)
 
         self.output_block = nn.Sequential(
-            Conv2d(dim, channels, 3),
+            Conv1d(dim, channels, 3),
             Gain()
         )
 
@@ -498,7 +505,7 @@ class KarrasUnet(Module):
         self.ups = ModuleList([])
 
         curr_dim = dim
-        curr_res = image_size
+        curr_res = seq_len
 
         self.skip_mp_cat = MPCat(t = mp_cat_t, dim = 1)
 
@@ -563,7 +570,7 @@ class KarrasUnet(Module):
     ):
         # validate image shape
 
-        assert x.shape[1:] == (self.channels, self.image_size, self.image_size)
+        assert x.shape[1:] == (self.channels, self.seq_len)
 
         # self conditioning
 
@@ -686,32 +693,17 @@ class MPImageTransformer(Module):
 
         return x
 
-# works best with inverse square root decay schedule
-
-def InvSqrtDecayLRSched(
-    optimizer,
-    t_ref = 70000,
-    sigma_ref = 0.01
-):
-    """
-    refer to equation 67 and Table1
-    """
-    def inv_sqrt_decay_fn(t: int):
-        return sigma_ref / sqrt(max(t / t_ref, 1.))
-
-    return LambdaLR(optimizer, lr_lambda = inv_sqrt_decay_fn)
-
 # example
 
 if __name__ == '__main__':
-    unet = KarrasUnet(
-        image_size = 64,
+    unet = KarrasUnet1D(
+        seq_len = 64,
         dim = 192,
         dim_max = 768,
         num_classes = 1000,
     )
 
-    images = torch.randn(2, 4, 64, 64)
+    images = torch.randn(2, 4, 64)
 
     denoised_images = unet(
         images,
