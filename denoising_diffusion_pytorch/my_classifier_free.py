@@ -33,6 +33,8 @@ from denoising_diffusion_pytorch.my_fid_evaluation import FIDEvaluation_label
 from denoising_diffusion_pytorch.version import __version__
 
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
 
 # constants
 
@@ -661,7 +663,7 @@ class MyDataset(Dataset):
         img = self[index][0]
         img = unnormalize_to_zero_to_one(img)
         img = img.clamp(0,1)
-        return tensor_to_pil(img)
+        return tensor2pil(img)
     
     # def img_mean_classes(self, classes):
     #     img = self.mean_classes[classes]
@@ -673,7 +675,7 @@ class MyDataset(Dataset):
 class GaussianDiffusion(nn.Module):
     def __init__(
         self,
-        dataset,
+        num_classes,
         model,
         *,
         image_size,
@@ -691,7 +693,7 @@ class GaussianDiffusion(nn.Module):
         assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
         assert not model.random_or_learned_sinusoidal_cond
 
-        self.num_classes = dataset.num_classes
+        self.num_classes = num_classes
         # self.mean_classes = dataset.mean_classes
         # self.is_minus_mean = is_minus_mean
 
@@ -969,6 +971,58 @@ class GaussianDiffusion(nn.Module):
             return ret, ret2
         else:
             return ret
+    
+    def sample2gif(self,i0=0, classes = None, is_ddim=False, is_sample=True, cond_scale = 6., rescaled_phi = 0.7, save_gif_path = None):
+        with torch.inference_mode():
+            if is_sample == True:
+                if classes is None:
+                    classes = torch.randint(0,self.num_classes,(1,)).to(self.device)
+                batch_size, image_size, channels = classes.shape[0], self.image_size, self.channels
+                sample_fn = self.p_sample_loop if not is_ddim else self.ddim_sample
+                image_list = sample_fn((batch_size, channels, image_size, image_size), 
+                                    cond_scale, rescaled_phi,
+                                    return_all_timesteps=True,
+                                    return_predict_x0=True,
+                                    )
+                """
+                The shape of image_list[0], image_list[1] is
+                torch.Size([16, 200, 3, 64, 64])
+                """
+                torch.save(image_list[0], 'backward_process_gif.pth')
+                torch.save(image_list[1], 'pred_x0_gif.pth')
+            else:
+                image_list = ['','']
+                image_list[0] = torch.load('backward_process_gif.pth')
+                image_list[1] = torch.load('pred_x0_gif.pth')
+
+            A = image_list[0][i0].permute(0,2,3,1).cpu()[1:].clamp(0,1)
+            B = image_list[1][i0].permute(0,2,3,1).cpu().clamp(0,1)
+
+            if is_ddim:
+                def update(frame):
+                    imgA.set_array(A[frame])
+                    imgB.set_array(B[frame])
+                    axA.set_title(f'Backward process: xti, i={self.sampling_timesteps-1-frame}')
+                    return imgA, imgB
+            else:
+                def update(frame):
+                    imgA.set_array(A[frame])
+                    imgB.set_array(B[frame])
+                    axA.set_title(f'Backward process: xt, t={self.num_timesteps-1-frame}')
+                    return imgA, imgB
+
+            fig, (axA, axB) = plt.subplots(nrows=1,ncols=2, figsize=(6,4))
+
+            imgA = axA.imshow(A[0])
+            axA.set_title('Backward process: xt')
+
+            imgB = axB.imshow(B[0])
+            axB.set_title('predict x0')
+
+            animation = FuncAnimation(fig, update, frames=len(A), interval = 100, blit = True)
+            if save_gif_path:
+                animation.save(filename=save_gif_path, writer="pillow")
+            display(HTML(animation.to_jshtml()))
 
     @torch.inference_mode()
     def sample(self, 
@@ -1000,11 +1054,13 @@ class GaussianDiffusion(nn.Module):
         img = unnormalize_to_zero_to_one(img)
         return img
     
+    # TODO: classes 要改？
     @torch.inference_mode()
-    def interpolate_from_x1_to_x2(self, x1, x2, classes, t = None, s = (2,8), save_gif_path = None):
+    def interpolate_from_x1_to_x2(self, x1, x2, classes, t = None, s = (2,8), save_gif_path = None, power_f = 1):
         """
         s + 1 等分 \n
-        x1,x2 with shape (c,w,h) (single image)
+        x1,x2 with shape (1,c,w,h) (batch = 1, single image)
+        classes = torch.tensor([class] * s0*s1 ).long().cuda()
         """
         b, *_, device = *x1.shape, x1.device
         assert b == 1
@@ -1014,12 +1070,16 @@ class GaussianDiffusion(nn.Module):
         assert x1.shape == x2.shape
 
         t_batched = torch.stack([torch.tensor(t, device = device)] * b)
-        xt1, xt2 = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
+        x1t, x2t = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
 
         ss = s[0] * s[1]
 
         # 建立等差數列 lam
-        lam = torch.linspace(0, 1, ss+1).to(device)
+        lam = torch.linspace(-1, 1, ss+1).to(device) ** power_f
+        if power_f % 2 == 0:
+            lam[:(ss+1)//2] *= -1
+        lam = (lam + 1)/2
+        
         lam = lam.view(-1,1,1,1)
         
         # 使用廣播執行內插
@@ -1032,7 +1092,7 @@ class GaussianDiffusion(nn.Module):
         img_list = list(img.clamp(0,1).cpu())
         
         if save_gif_path:
-            images_to_gif(img_list, save_path=save_gif_path, duration=200)
+            images2gif(img_list, save_path=save_gif_path, duration=200)
         
         # 创建一个2x5的子图布局
         _, axs = plt.subplots(s[0], s[1], figsize=(2 * s[1], 2 * s[0]))

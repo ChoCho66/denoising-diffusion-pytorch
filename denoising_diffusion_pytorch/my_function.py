@@ -28,7 +28,7 @@ def images2gif(
     images: list of tensors with length L \n
     image: tensor with shape (c,w,h)
     """
-    images = [tensor_to_pil(i) for i in images]
+    images = [tensor2pil(i) for i in images]
     return images[0].save(save_path, save_all=True, append_images=images[1:], loop=loop, duration=duration)
   
 def save_info(path,model,diffusion,trainer):
