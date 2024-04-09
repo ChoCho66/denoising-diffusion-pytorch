@@ -27,7 +27,7 @@
     \mu_t(x_t,x_0) = \mathtt{posterior_mean_coef1}\quad x_0 + \mathtt{posterior_mean_coef2} \quad x_t.
   \end{aligned}
   $$
-  
+
 
 - `q_posterior(x_start, x_t, t)`:
   $$

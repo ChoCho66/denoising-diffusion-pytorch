@@ -16,6 +16,12 @@ def add_to_class(Class):
     setattr(Class, obj.__name__, obj)
   return wrapper
 
+def normalize_to_neg_one_to_one(img):
+    return img * 2 - 1
+
+def unnormalize_to_zero_to_one(t):
+    return (t + 1) * 0.5
+
 from sys import getsizeof
 cuda_or_cpu = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -826,6 +826,20 @@ class GaussianDiffusion(nn.Module):
             if save_gif_path:
                 animation.save(filename=save_gif_path, writer="pillow")
             display(HTML(animation.to_jshtml()))
+            plt.close()
+            
+            I0, J0 = 2,8
+            fig, axes = plt.subplots(I0, J0, figsize=(16, 4))
+
+            for i in range(I0):
+                for j in range(J0):
+                    img = image_list[0][i*J0 + j][-1]
+                    img = tensor2pil(img)
+                    axes[i, j].imshow(img)
+                    axes[i, j].axis('off')
+
+            plt.subplots_adjust(wspace=0.1, hspace=0.1)
+            plt.show()
 
     @torch.inference_mode()
     def sample(self, batch_size = 16, return_all_timesteps = False):
@@ -905,6 +919,151 @@ class GaussianDiffusion(nn.Module):
         # 调整布局，以免重叠
         plt.tight_layout()
         plt.show()
+        
+    @torch.inference_mode()
+    def new_interpolate_from_x1_to_x2(self, x1, x2, t = None, s = 16, save_gif_path = None, power_f = 1):
+        """
+        s + 1 等分 \n
+        x1,x2 with shape (b,c,w,h) (b=1, single image)
+        """
+        b, *_, device = *x1.shape, x1.device
+        assert b == 1
+        
+        t = default(t, self.num_timesteps - 1)
+
+        assert x1.shape == x2.shape
+
+        t_batched = torch.stack([torch.tensor(t, device = device)] * b)
+        x1t, x2t = map(lambda x: self.q_sample(x, t = t_batched), (x1, x2))
+
+
+        # 建立數列 lam
+        # 等差 <=> power_f = 1
+        lam = torch.linspace(-1, 1, s+1).to(device) ** power_f
+        if power_f % 2 == 0:
+            lam[:(s+1)//2] *= -1
+        lam = (lam + 1)/2
+        
+        lam = lam.view(-1,1,1,1)
+
+        # 使用廣播執行內插
+        img = (1 - lam) * x1t + lam * x2t
+        
+        for i in tqdm(reversed(range(0, t)), desc = 'interpolation sample time step', total = t):
+            img, _ = self.p_sample(img, i)
+            
+        img = unnormalize_to_zero_to_one(img)
+        img = img.permute(0, 2, 3, 1).cpu().clamp(0, 1)
+        img_list = list(img)
+        # img_list = list(img.clamp(0,1).cpu())
+        
+        def update(frame):
+            imgA.set_array(img_list[frame])
+            axA.set_title(f'Interpolation of (x1,x2), s={frame}/{s}')
+            return imgA,
+        fig, (ax1, axA, ax2) = plt.subplots(nrows=1, ncols=3, figsize=(6,3))
+        fig.subplots_adjust(left=0.01, bottom=0.1, right=0.99, top=0.9, wspace=0.1)
+        img1 = ax1.imshow(unnormalize_to_zero_to_one(x1[0]).permute(1,2,0).cpu())
+        imgA = axA.imshow(img_list[0])
+        axA.set_title('Interpolation of (x1,x2), s=0')
+        img2 = ax2.imshow(unnormalize_to_zero_to_one(x2[0]).permute(1,2,0).cpu())
+        animation = FuncAnimation(fig, update, frames=len(img_list), interval = 100, blit = True)
+        if save_gif_path:
+            animation.save(filename=save_gif_path, writer="pillow")
+        display(HTML(animation.to_jshtml()))
+        plt.close()
+        
+    def forward_backwrad_process(self, ds:Dataset, num_timesteps:int, b:int=7, contains_backward=True, n=4):
+        """
+        x_start with shape (b, w, h, c)
+        """
+        with torch.inference_mode():
+            _ = DataLoader(ds,batch_size=b,shuffle=True)
+            _ = next(iter(_))
+            x_start = _.clone()
+            noise_list = []
+            xt_list = [] 
+            noise_list.append(torch.zeros_like(x_start[0]))
+            xt_list.append(unnormalize_to_zero_to_one(x_start))
+            x_t = x_start.to(self.device)
+            for t in range(num_timesteps):
+                noise_t = torch.randn_like(x_t[0]).to(self.device)
+                noise_t = torch.stack([noise_t.clone().detach() for __ in range(b)]).to(self.device)
+                x_t = torch.sqrt(1-self.betas[t]) * x_t + \
+                    torch.sqrt(self.betas[t]) * noise_t
+                if t % n == 0:
+                    xt_list.append(unnormalize_to_zero_to_one(x_t))
+                    noise_list.append(unnormalize_to_zero_to_one(noise_t[0]))
+            for t in tqdm(reversed(range(0, num_timesteps)), desc = 'Backward process', total = num_timesteps):
+                noise_t = torch.zeros_like(x_t[0])
+                x_t, _ = self.p_sample(x_t, t)
+                if t % n == 0:
+                    noise_list.append(unnormalize_to_zero_to_one(noise_t))
+                    xt_list.append(unnormalize_to_zero_to_one(x_t))
+            # with open("xt_list","wb") as fp:
+            #     pickle.dump(xt_list,fp)
+            xt_list = [ i.permute(0,2,3,1).cpu().clamp(0,1) for i in xt_list ]
+            noise_list = [ i.permute(1,2,0).cpu().clamp(0,1) for i in noise_list ]
+
+            def update(frame):
+                img0.set_array(xt_list[frame][0])
+                img1.set_array(xt_list[frame][1])
+                img2.set_array(xt_list[frame][2])
+                img3.set_array(xt_list[frame][3])
+                img4.set_array(xt_list[frame][4])
+                img5.set_array(xt_list[frame][5])
+                img6.set_array(xt_list[frame][6])
+                img_noise.set_array(noise_list[frame])
+
+                if n*frame < num_timesteps:
+                    ax3.set_title(f'Forward process, t={n*frame}')
+                    return img0, img1, img2, img3, img4, img5, img6, img_noise
+                else:
+                    ax3.set_title(f'Backward process, t={2*num_timesteps - n*frame}')
+                    return img0, img1, img2, img3, img4, img5, img6, img_noise
+            
+            _fig, (_ax0, _ax1, _ax2, _ax3, _ax4, _ax5, _ax6, _ax_noise) = plt.subplots(nrows=1, ncols=8, figsize=(12,3))
+            _fig.subplots_adjust(left=0.01, bottom=0.1, right=0.99, top=0.9, wspace=0.1)
+            _ax0.imshow(xt_list[0][0])
+            _ax1.imshow(xt_list[0][1])
+            _ax2.imshow(xt_list[0][2])
+            _ax3.imshow(xt_list[0][3])
+            _ax4.imshow(xt_list[0][4])
+            _ax5.imshow(xt_list[0][5])
+            _ax6.imshow(xt_list[0][6])
+            _ax_noise.imshow(noise_list[0])
+            _ax3.set_title('x0')
+            
+            fig, (ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax_noise) = plt.subplots(nrows=1, ncols=8, figsize=(12,3))
+            fig.subplots_adjust(left=0.01, bottom=0.1, right=0.99, top=0.9, wspace=0.1)
+            img0 = ax0.imshow(xt_list[0][0])
+            img1 = ax1.imshow(xt_list[0][1])
+            img2 = ax2.imshow(xt_list[0][2])
+            img3 = ax3.imshow(xt_list[0][3])
+            img4 = ax4.imshow(xt_list[0][4])
+            img5 = ax5.imshow(xt_list[0][5])
+            img6 = ax6.imshow(xt_list[0][6])
+            img_noise = ax_noise.imshow(noise_list[0])
+            
+            ax3.set_title('Forward and Backward process, t=0')
+            ax_noise.set_title('Noise')
+            animation = FuncAnimation(fig, update, frames=len(xt_list), interval = 100, blit = True)
+            # if save_gif_path:
+            #     animation.save(filename=save_gif_path, writer="pillow")
+            display(HTML(animation.to_jshtml()))
+            plt.close()
+            
+            __fig, (__ax0, __ax1, __ax2, __ax3, __ax4, __ax5, __ax6, __ax_noise) = plt.subplots(nrows=1, ncols=8, figsize=(12,3))
+            __fig.subplots_adjust(left=0.01, bottom=0.1, right=0.99, top=0.9, wspace=0.1)
+            __ax0.imshow(xt_list[-1][0])
+            __ax1.imshow(xt_list[-1][1])
+            __ax2.imshow(xt_list[-1][2])
+            __ax3.imshow(xt_list[-1][3])
+            __ax4.imshow(xt_list[-1][4])
+            __ax5.imshow(xt_list[-1][5])
+            __ax6.imshow(xt_list[-1][6])
+            __ax_noise.imshow(noise_list[-1])
+            __ax3.set_title('Final x0')
 
 # TODO: gif 製作變大點
 
@@ -1011,6 +1170,12 @@ class MyDataset(Dataset):
         path = self.paths[index]
         img = Image.open(path)
         return self.transform(img)
+
+    def img(self, index):
+        img = self[index]
+        img = unnormalize_to_zero_to_one(img)
+        img = img.clamp(0,1)
+        return tensor2pil(img)
 
 # trainer class
 
