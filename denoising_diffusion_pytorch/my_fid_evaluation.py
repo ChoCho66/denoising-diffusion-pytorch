@@ -46,25 +46,36 @@ class FIDEvaluation:
         self.dataset_stats_loaded = False
 
     def calculate_inception_features(self, samples):
+        # 计算并返回Inception模型的特征
+
+        # 如果输入样本的通道数为1，则将其复制为3个通道
         if self.channels == 1:
             samples = repeat(samples, "b 1 ... -> b c ...", c=3)
 
+        # 将Inception V3模型设置为评估模式
         self.inception_v3.eval()
+        # 通过Inception V3模型获取输入样本的特征
         features = self.inception_v3(samples)[0]
 
+        # 如果特征的高度或宽度不为1，则对特征进行自适应平均池化
         if features.size(2) != 1 or features.size(3) != 1:
             features = adaptive_avg_pool2d(features, output_size=(1, 1))
+        # 重新排列特征的维度
         features = rearrange(features, "... 1 1 -> ...")
+        # 返回特征
         return features
 
     def load_or_precalc_dataset_stats(self):
+        # 加载或预先计算数据集的统计信息
         path = os.path.join(self.stats_dir, "dataset_stats")
         try:
+            # 尝试从磁盘加载数据集统计信息
             ckpt = np.load(path + ".npz")
             self.m2, self.s2 = ckpt["m2"], ckpt["s2"]
             self.print_fn("Dataset stats loaded from disk.")
             ckpt.close()
         except OSError:
+            # 若加载失败，则进行数据集统计信息的预先计算
             num_batches = int(math.ceil(self.n_samples / self.batch_size))
             stacked_real_features = []
             self.print_fn(
@@ -72,6 +83,7 @@ class FIDEvaluation:
             )
             for _ in tqdm(range(num_batches)):
                 try:
+                    # 逐批次获取真实样本并计算Inception特征
                     real_samples = next(self.dl)
                 except StopIteration:
                     break
@@ -81,8 +93,10 @@ class FIDEvaluation:
             stacked_real_features = (
                 torch.cat(stacked_real_features, dim=0).cpu().numpy()
             )
+            # 计算均值和协方差矩阵
             m2 = np.mean(stacked_real_features, axis=0)
             s2 = np.cov(stacked_real_features, rowvar=False)
+            # 将统计信息缓存至磁盘
             np.savez_compressed(path, m2=m2, s2=s2)
             self.print_fn(f"Dataset stats cached to {path}.npz for future use.")
             self.m2, self.s2 = m2, s2

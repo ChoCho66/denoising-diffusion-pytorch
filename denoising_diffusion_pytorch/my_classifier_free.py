@@ -193,12 +193,17 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
 
 class Block(nn.Module):
     def __init__(self, dim, dim_out, groups=8):
+        # 主要在做 group normalization
         super().__init__()
         self.proj = nn.Conv2d(dim, dim_out, 3, padding=1)
         self.norm = nn.GroupNorm(groups, dim_out)
         self.act = nn.SiLU()
 
     def forward(self, x, scale_shift=None):
+        # x -> self.proj -> self.norm -> self.act
+        # - 使用 self.proj 調整維度
+        # - 使用 self.norm 做 GroupNorm 
+        # - 使用 self.act 做 SiLU 
         x = self.proj(x)
         x = self.norm(x)
 
@@ -337,7 +342,7 @@ class Unet(nn.Module):
     def __init__(
         self,
         dim,
-        num_classes,
+        num_classes: int,
         cond_drop_prob=0.5,
         init_dim=None,
         out_dim=None,
@@ -1067,7 +1072,7 @@ class GaussianDiffusion(nn.Module):
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     @torch.inference_mode()
-    def p_sample(self, x, t: int, classes, cond_scale=6., rescaled_phi=0.7, clip_denoised=True):
+    def p_sample(self, x, t: int, classes: torch.int, cond_scale=6., rescaled_phi=0.7, clip_denoised=True):
         b, *_, device = *x.shape, x.device
         batched_times = torch.full(
             (x.shape[0],), t, device=x.device, dtype=torch.long)
@@ -1178,7 +1183,7 @@ class GaussianDiffusion(nn.Module):
         else:
             return ret
 
-    def sample2gif(self, i0=0, classes=None, is_ddim=False, is_sample=True, cond_scale=6., rescaled_phi=0.7, save_gif_path=None):
+    def sample2gif(self, i0=0, classes=None, is_ddim=False, is_sample=True, cond_scale=6., rescaled_phi=0.7, save_gif_path=None, show_results=False, n = 5):
         with torch.inference_mode():
             if is_sample == True:
                 if classes is None:
@@ -1237,18 +1242,19 @@ class GaussianDiffusion(nn.Module):
             display(HTML(animation.to_jshtml()))
             plt.close()
 
-            I0, J0 = 2, 8
-            fig, axes = plt.subplots(I0, J0, figsize=(16, 4))
+            if show_results:
+                I0, J0 = 2, 8
+                fig, axes = plt.subplots(I0, J0, figsize=(16, 4))
 
-            for i in range(I0):
-                for j in range(J0):
-                    img = image_list[0][i*J0 + j][-1]
-                    img = tensor2pil(img)
-                    axes[i, j].imshow(img)
-                    axes[i, j].axis('off')
+                for i in range(I0):
+                    for j in range(J0):
+                        img = image_list[0][i*J0 + j][-1]
+                        img = tensor2pil(img)
+                        axes[i, j].imshow(img)
+                        axes[i, j].axis('off')
 
-            plt.subplots_adjust(wspace=0.1, hspace=0.1)
-            plt.show()
+                plt.subplots_adjust(wspace=0.1, hspace=0.1)
+                plt.show()
 
     @torch.inference_mode()
     def sample(self,
@@ -1394,7 +1400,7 @@ class GaussianDiffusion(nn.Module):
         plt.close()
 
     # def forward_backwrad_process(self, x_start:torch, classes:torch, num_timesteps:int, b:int=7, contains_backward=True, cond_scale = 6., rescaled_phi = 0.7):
-    def forward_backwrad_process(self, ds: Dataset, num_timesteps: int, b: int = 7, contains_backward=True, cond_scale=6., rescaled_phi=0.7, n=1):
+    def forward_backwrad_process(self, ds: Dataset, num_timesteps: int, classes_int: int = -1, b: int = 7, contains_backward=True, cond_scale=6., rescaled_phi=0.7, n=5):
         """
         x_start with shape (b, w, h, c)
         """
@@ -1402,7 +1408,10 @@ class GaussianDiffusion(nn.Module):
             _ = DataLoader(ds, batch_size=b, shuffle=True)
             _ = next(iter(_))
             x_start = _[0].clone()
-            classes = _[1].to(self.device)
+            if classes_int < 0:
+                classes = _[1].to(self.device)
+            else:
+                classes = torch.ones(b, dtype=torch.int).to(self.device) * classes_int
             noise_list = []
             xt_list = []
             noise_list.append(torch.zeros_like(x_start[0]))

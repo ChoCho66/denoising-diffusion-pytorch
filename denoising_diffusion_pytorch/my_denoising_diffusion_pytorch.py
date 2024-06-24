@@ -149,12 +149,18 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
 
 class Block(nn.Module):
     def __init__(self, dim, dim_out, groups = 8):
+        # 主要在做 group normalization
         super().__init__()
         self.proj = nn.Conv2d(dim, dim_out, 3, padding = 1)
         self.norm = nn.GroupNorm(groups, dim_out)
         self.act = nn.SiLU()
 
     def forward(self, x, scale_shift = None):
+        # x -> self.proj -> self.norm -> self.act
+        # - 使用 self.proj 調整維度
+        # - 使用 self.norm 做 GroupNorm 
+        # - 使用 self.act 做 SiLU 
+        
         x = self.proj(x)
         x = self.norm(x)
 
