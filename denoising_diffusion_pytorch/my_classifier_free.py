@@ -108,6 +108,8 @@ def prob_mask_like(shape, prob, device):
     elif prob == 0:
         return torch.zeros(shape, device=device, dtype=torch.bool)
     else:
+        # 如果左邊的值 < prob 則為 True
+        # 所以這裡相當於 Bern(prob)
         return torch.zeros(shape, device=device).float().uniform_(0, 1) < prob
 
 # small helper modules
@@ -156,16 +158,37 @@ class PreNorm(nn.Module):
 
 
 class SinusoidalPosEmb(nn.Module):
+    """
+    input shape: (b, 1)
+    output shape: (b, dim)
+    """
     def __init__(self, dim):
         super().__init__()
         self.dim = dim
 
-    def forward(self, x):
-        device = x.device
+    def forward(self, time):
+        device = time.device
         half_dim = self.dim // 2
+        
+        # Ex:
+        # half_dim = 64
+        # emb = ~e
         emb = math.log(10000) / (half_dim - 1)
+        
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
-        emb = x[:, None] * emb[None, :]
+        # emb = [ exp{~e}, exp{-2~e}, ..., ] = [ e1, e2, ..., e63 ]
+        
+        
+        emb = time[:, None] * emb[None, :]
+        # time[:, None] :  [[ t1 ], 
+        #                   [ t2 ],
+        #                   [ t3 ]]
+        # embeddings[None, :] :  [ [e1, e2, ..., e63] ]
+        # emb = [ [t1e1, t1e2, ..., t1e63],
+        #         [t2e1, t2e2, ..., t2e63],
+        #         [t3e1, t3e2, ..., t3e63] ]
+        
+        
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
 
@@ -508,6 +531,9 @@ class Unet(nn.Module):
         return rescaled_logits * rescaled_phi + scaled_logits * (1. - rescaled_phi)
 
     # training 時用的 noise predictor
+    # x : (b,c,h,w)
+    # time : (b,1)
+    # classes : (b,)
     def forward(
         self,
         x,
@@ -521,6 +547,7 @@ class Unet(nn.Module):
 
         # derive condition, with condition dropout for classifier free guidance
 
+        # classes_emb 為 classes 的 embedding in R^dim
         classes_emb = self.classes_emb(classes)
 
         # cond_drop_prob = 0 <=> keep conditioning information
@@ -530,11 +557,14 @@ class Unet(nn.Module):
             # prob = 1 <=> all ones.    prob = 0 <=> all zeros.
             # def prob_mask_like(shape, prob, device):
             #     return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+            
+            # keep_mask 為 (b,) 的 tensor，裡面每個元素都為 Bernoulli(prob)
             keep_mask = prob_mask_like(
                 (batch,), 1 - cond_drop_prob, device=device)
             null_classes_emb = repeat(
                 self.null_classes_emb, 'd -> b d', b=batch)
 
+            # For each batch, classes_emb 裡的每個 x 的資訊，只有 keep_mask 為 1 的才會保留，其他的都會被替換成 null_classes_emb
             classes_emb = torch.where(
                 rearrange(keep_mask, 'b -> b 1'),
                 classes_emb,
@@ -2120,3 +2150,47 @@ class Trainer_stu(object):
         fid_score = self.fid_scorer.fid_score()
         accelerator.print(f'fid_score: {fid_score}')
         self.fid = fid_score
+        
+
+
+# example
+
+if __name__ == '__main__':
+    num_classes = 10
+
+    model = Unet(
+        dim = 64,
+        dim_mults = (1, 2, 4, 8),
+        num_classes = num_classes,
+        cond_drop_prob = 0.5
+    )
+
+    diffusion = GaussianDiffusion(
+        model,
+        image_size = 128,
+        timesteps = 1000
+    ).cuda()
+
+    training_images = torch.randn(8, 3, 128, 128).cuda() # images are normalized from 0 to 1
+    image_classes = torch.randint(0, num_classes, (8,)).cuda()    # say 10 classes
+
+    loss = diffusion(training_images, classes = image_classes)
+    loss.backward()
+
+    # do above for many steps
+
+    sampled_images = diffusion.sample(
+        classes = image_classes,
+        cond_scale = 6.                # condition scaling, anything greater than 1 strengthens the classifier free guidance. reportedly 3-8 is good empirically
+    )
+
+    sampled_images.shape # (8, 3, 128, 128)
+
+    # interpolation
+
+    interpolate_out = diffusion.interpolate(
+        training_images[:1],
+        training_images[:1],
+        image_classes[:1]
+    )
+
